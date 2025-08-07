@@ -2,20 +2,10 @@ import { toast } from 'sonner';
 
 export async function uploadImage(pngBlob: Blob): Promise<string> {
   try {
-    const response = await fetch('/api/user-logo', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'image/png',
-      },
-      body: pngBlob,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Upload failed: ${response.status} ${response.statusText}`);
-    }
-
-    const { imageId } = (await response.json()) as { imageId: string };
-
+    // Pure client-side: generate an ID and stash the blob in memory (URL) for session usage
+    const imageId = Math.random().toString(36).slice(2);
+    const url = URL.createObjectURL(pngBlob);
+    sessionStorage.setItem(`logo:${imageId}`, url);
     window.history.pushState({}, '', `/${imageId}`);
     return imageId;
   } catch (error) {

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { defaultParams, params, type ShaderParams } from './params';
-import { Canvas } from './canvas';
+import { Canvas, type CanvasHandle } from './canvas';
 import { Slider } from 'radix-ui';
 import { NumberInput } from '@/app/number-input';
 import { roundOptimized } from '@/app/round-optimized';
@@ -34,6 +34,11 @@ export function Hero({ imageId }: HeroProps) {
 
   const [imageData, setImageData] = useState<ImageData | null>(null);
   const [processing, setProcessing] = useState<boolean>(true);
+  const canvasRef = useRef<CanvasHandle | null>(null);
+  const [exportSize, setExportSize] = useState<number>(1000);
+  const [exportTransparent, setExportTransparent] = useState<boolean>(true);
+  const [exportBg, setExportBg] = useState<string>('#000000');
+  const [exporting, setExporting] = useState<boolean>(false);
 
   // Check URL for image ID on mount
   useEffect(() => {
@@ -41,18 +46,48 @@ export function Hero({ imageId }: HeroProps) {
 
     async function updateImageData() {
       try {
-        const res = await fetch(`https://p1ljtcp1ptfohfxm.public.blob.vercel-storage.com/${imageId}.png`);
-        const blob = await res.blob();
-        const bitmap = await createImageBitmap(blob);
+        // Helper: load image (blob URL or object URL) into ImageData safely (works for SVG/PNG)
+        async function loadToImageData(srcUrl: string): Promise<ImageData> {
+          return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => {
+              const w = Math.max(1, img.naturalWidth || (img as any).width || 1);
+              const h = Math.max(1, img.naturalHeight || (img as any).height || 1);
+              const c = document.createElement('canvas');
+              c.width = w;
+              c.height = h;
+              const ctx = c.getContext('2d');
+              if (!ctx) return reject(new Error('2D context unavailable'));
+              ctx.drawImage(img, 0, 0, w, h);
+              try {
+                const data = ctx.getImageData(0, 0, w, h);
+                resolve(data);
+              } catch (e) {
+                reject(e);
+              }
+            };
+            img.onerror = () => reject(new Error('Failed to decode image'));
+            img.src = srcUrl;
+          });
+        }
 
-        // Create a temporary canvas to turn the image back into imageData for the shader
-        const canvas = document.createElement('canvas');
-        canvas.width = bitmap.width;
-        canvas.height = bitmap.height;
-        const ctx = canvas.getContext('2d')!;
-        ctx.drawImage(bitmap, 0, 0);
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        setImageData(imageData);
+        // Try sessionStorage first to stay fully client-side
+        const localUrl = sessionStorage.getItem(`logo:${imageId}`);
+        if (localUrl) {
+          const imageData = await loadToImageData(localUrl);
+          setImageData(imageData);
+        } else {
+          const res = await fetch(`/api/user-logo?id=${imageId}`, { cache: 'no-store' });
+          if (!res.ok) throw new Error(`Failed to load image: ${res.status}`);
+          const blob = await res.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          try {
+            const imageData = await loadToImageData(objectUrl);
+            setImageData(imageData);
+          } finally {
+            URL.revokeObjectURL(objectUrl);
+          }
+        }
       } catch (error) {
         console.error(error);
       }
@@ -151,7 +186,6 @@ export function Hero({ imageId }: HeroProps) {
             .then((imageId) => {
               // Update the URL for sharing
               if (typeof window !== 'undefined' && typeof imageId === 'string' && imageId.length > 0) {
-                // const currentParams = searchParams.values.length ? '?' + searchParams.toString() : '';
                 window.history.pushState({}, '', `/share/${imageId}`);
               }
             })
@@ -202,7 +236,9 @@ export function Hero({ imageId }: HeroProps) {
         }}
       >
         <div className="aspect-square w-400">
-          {imageData && <Canvas imageData={imageData} params={state} processing={processing} />}
+          {imageData && (
+            <Canvas ref={canvasRef} imageData={imageData} params={state} processing={processing} />
+          )}
         </div>
       </div>
 
@@ -327,6 +363,98 @@ export function Hero({ imageId }: HeroProps) {
             Tips: transparent or white background is required. Shapes work better than words. Use an SVG or a
             high-resolution image.
           </p>
+        </div>
+
+        {/* Export controls */}
+        <div className="col-span-full mt-16 h-px bg-white/20" />
+
+        <div>
+          <label className="pr-16 text-nowrap" htmlFor="export-size">Export Size</label>
+        </div>
+        <div className="sm:col-span-2">
+          <NumberInput
+            id="export-size"
+            min={64}
+            max={4096}
+            increments={[10, 100]}
+            className="h-40 w-full rounded-4 bg-white/15 pl-12 text-sm tabular-nums outline-white/20 focus:outline-2 focus:-outline-offset-1 focus:outline-blue"
+            value={exportSize.toString()}
+            format={(v) => Math.max(64, Math.min(4096, parseInt(v || '0', 10))).toString()}
+            onValueCommit={(value) => setExportSize(Math.max(64, Math.min(4096, parseInt(value || '0', 10))))}
+          />
+        </div>
+
+        <div>
+          <label className="pr-16 text-nowrap">Export Background</label>
+        </div>
+        <div className="flex items-center gap-12 sm:col-span-2">
+          <label className="flex items-center gap-8 text-sm">
+            <input
+              type="checkbox"
+              checked={exportTransparent}
+              onChange={(e) => setExportTransparent(e.currentTarget.checked)}
+            />
+            Transparent
+          </label>
+          <label
+            className="size-28 cursor-pointer rounded-full text-[0px] focus-within:cursor-default [&:has(:focus-visible)]:outline-2 [&:has(:focus-visible)]:outline-offset-2 [&:has(:focus-visible)]:outline-focus"
+            style={
+              exportTransparent
+                ? {
+                    background:
+                      'linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%)',
+                    backgroundSize: '10px 10px',
+                    backgroundPosition: '0 0, 0 5px, 5px -5px, -5px 0px',
+                  }
+                : { background: exportBg }
+            }
+            title="Pick export background color"
+          >
+            <input
+              className="h-full w-full cursor-pointer rounded-full opacity-0"
+              type="color"
+              disabled={exportTransparent}
+              value={exportBg}
+              onChange={(event) => setExportBg(event.currentTarget.value)}
+            />
+            Color
+          </label>
+        </div>
+
+        <div className="col-span-full">
+          <button
+            onClick={async () => {
+              if (!canvasRef.current) return;
+              try {
+                setExporting(true);
+                toast.message('Encoding GIF…');
+                const blob = await canvasRef.current.exportGIF({
+                  side: exportSize,
+                  durationSec: 3,
+                  fps: 20,
+                  background: exportTransparent ? 'transparent' : exportBg,
+                });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `liquid-logo-${exportSize}.gif`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                URL.revokeObjectURL(url);
+                toast.success('GIF exported');
+              } catch (err) {
+                console.error(err);
+                toast.error('Failed to export GIF');
+              } finally {
+                setExporting(false);
+              }
+            }}
+            disabled={exporting || !imageData}
+            className="mt-8 flex h-40 items-center justify-center rounded-4 bg-button px-16 font-medium disabled:opacity-50"
+          >
+            {exporting ? 'Exporting…' : 'Export GIF'}
+          </button>
         </div>
       </div>
     </div>
